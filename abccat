@@ -1,144 +1,166 @@
-eval 'exec perl -S -s $0 ${1+"$@"}'
-                    if $running_under_some_shell;
+#!/usr/bin/env python3
 
-# $Id$
+"""Concatenate ABC tunes into a single multi-part tune.
 
-# We are reading the first tune:
-$first_tune = 1;
-$a_tune_has_been_found = 0;
-$global_P_header = "";
-$output_buffer = "";
+This tool reads one or more ABC music files, each containing
+individual tunes (identified by X: headers), and merges them into a
+single composite tune.  The first P: (part order) header of each input
+tune is collected to build a global play-order string that describes
+how all the parts should be played in sequence.
 
+Headers that are meaningful only per-tune (such as T: for title, X:
+for reference number, K: for key, etc. listed in UNIQUE_HEADERS) are
+emitted as %%text comments so they appear as annotations rather than
+active ABC directives in the merged output.
 
-if ($#ARGV == -1) {
-    # No argument: use STDIN:
-    abccat(STDIN);
-}
-else {
-    # Deal with each given file:
-    foreach $f (@ARGV) {
-	open (INPUT, $f) or die "Cannot open abc file \"$f\"\n";
-	abccat(INPUT);
-    }
-}
-print "X:1\n";
-if (defined $abccat_P_header) {
-    print "P:$abccat_P_header\n";
-    print "%%text instead of P:$global_P_header\n";
-}
-else {
-    print "P:$global_P_header\n";
-}
-print $output_buffer;
+An optional ``%%abccat P:<value>`` directive in the input overrides the
+automatically collected global P: header, while still showing the
+original as a %%text annotation.
 
+Usage::
 
-# The abccat procedure.
-# Take as input the file handle of the file to read.
-sub abccat($) {
-    my ($FILE) = @_;
-    $line = "";
-  LINE: while (<$FILE>) {
-      # Discard the end of line character:
-      chomp;
-      # Add the current line to the line buffer:
-      $line .= $_;
+    abccat tune1.abc tune2.abc > merged.abc
+    cat tune1.abc tune2.abc | abccat > merged.abc
+"""
 
-      if ($line =~ /^\s*([A-Z]):(.*)/) {
-	  # This is a header line.
-	  $header = $1;
-	  $content = $2;
-	  if ($line =~ /\\$/) {
-	      # This is a continuation line: grab once more...
-	      $line .= "\n";
-	      next LINE;
-	  }
-	  deal_with_header($header, $content);
-      }
-      elsif ($line =~ /^%%abccat\sP:(.*)$/) {
-	  print STDERR "Define an explicit global P:$1\n";
-	  $abccat_P_header = $1;
-      }
-      elsif ($line =~ /^\s*$/) {
-	  #print "Blank line!\n";
-      }
-      else {
-	  output("$line\n");
-      }
-    $line = "";
-  }
-}
+import re
+import sys
+
+# ABC headers that are only meaningful once per tune and cannot be
+# meaningfully merged.  When concatenating, these are converted to
+# %%text comments so they remain visible but do not interfere with
+# the combined output.
+UNIQUE_HEADERS = set("ABCDGHNORSZT")
 
 
-# Deal with the various headers.
-# Take as input the header character and its value:
-sub deal_with_header($$) {
-    my ($header, $content) = @_;
+def main():
+    # Whether we are still processing the very first tune
+    first_tune = True
+    # Set to True once at least one X: header has been seen
+    a_tune_has_been_found = False
+    # Accumulated P: parts from each tune's first P: header
+    global_p_header = ""
+    # Explicit override from a %%abccat P: directive, if any
+    abccat_p_header = None
+    # All body output is buffered so the global header can be
+    # emitted first
+    output_buffer = ""
+    # Tracks whether the first P: of the current tune has been seen
+    p_header_found = False
 
-    if ($header eq "X") {
-	# The begin of a tune.
-	$P_header_found = 0;
-	if ($first_tune == 1 && $a_tune_has_been_found == 1) {
-	    # Well, this is no longer the first tune:
-	    $first_tune = 0;
-	}
-	$a_tune_has_been_found = 1;
-	# Just display it:
- 	output_header_as_text($header, $content);
-   }
-    elsif ($header eq "P") {
-	if ($P_header_found == 0) {
-	    # First P: of the tune. Remember the way to play:
-	    $global_P_header .= $content;
-	    # Ok, we've found the first P:
-	    $P_header_found = 1;
-	    # Just display it:
-	    output_header_as_text($header, $content);
-	}
-	else {
-	    # Just a part name:
-	    output_header($header, $content);
-	}  
-    }
-    elsif ("ABCDGHNORSZT" =~ /$header/) {
-	# These commands can only appear once in the header.
-	# Just output them as text since we cannot compute a global value ...
-	output_header_as_text($header, $content);
-    }
-    else {
-	output_header($header, $content);
-    }  
-}
+    def output(s):
+        """Append a string to the output buffer."""
+        nonlocal output_buffer
+        output_buffer += s
+
+    def output_header(header, content):
+        """Append an ABC header line (e.g. ``M:4/4``) to the output."""
+        output(f"{header}:{content}\n")
+
+    def output_as_text(s):
+        """Append a string as a ``%%text`` comment line."""
+        output(f"%%text {s}")
+
+    def output_header_as_text(header, content):
+        """Append an ABC header as a ``%%text`` comment."""
+        output_as_text(f"{header}:{content}\n")
+
+    def deal_with_header(header, content):
+        """Process a single ABC header field.
+
+        - ``X:`` marks the start of a new tune: reset per-tune state
+          and emit the original reference number as a text comment.
+        - The first ``P:`` of each tune contributes to the global
+          play-order; subsequent ``P:`` headers (part labels within the
+          tune body) are kept as active headers.
+        - Headers in UNIQUE_HEADERS are demoted to text comments since
+          they cannot be combined across tunes.
+        - All other headers (e.g. ``M:``, ``L:``, ``K:``, ``V:``,
+          ``w:``) are passed through unchanged.
+        """
+        nonlocal first_tune, a_tune_has_been_found, global_p_header
+        nonlocal p_header_found
+
+        if header == "X":
+            # Beginning of a new tune
+            p_header_found = False
+            if first_tune and a_tune_has_been_found:
+                first_tune = False
+            a_tune_has_been_found = True
+            output_header_as_text(header, content)
+        elif header == "P":
+            if not p_header_found:
+                # First P: of this tune defines its part order;
+                # accumulate it into the global play-order string
+                global_p_header += content
+                p_header_found = True
+                output_header_as_text(header, content)
+            else:
+                # Subsequent P: headers are part labels within
+                # the tune body -- keep them active
+                output_header(header, content)
+        elif header in UNIQUE_HEADERS:
+            # Per-tune-only headers: demote to text comments
+            output_header_as_text(header, content)
+        else:
+            # Mergeable headers: pass through as-is
+            output_header(header, content)
+
+    def abccat(f):
+        """Parse an ABC file and process its headers and body lines.
+
+        Handles continuation lines (ending with ``\\``) by
+        accumulating them before processing.  Recognizes the special
+        ``%%abccat P:`` directive to override the global part order.
+        Blank lines are silently discarded.
+        """
+        nonlocal abccat_p_header
+        line = ""
+        for raw in f:
+            raw = raw.rstrip("\n\r")
+            line += raw
+
+            m = re.match(r"^\s*([A-Z]):(.*)", line)
+            if m:
+                header, content = m.group(1), m.group(2)
+                if line.endswith("\\"):
+                    # Continuation line: keep accumulating
+                    line += "\n"
+                    continue
+                deal_with_header(header, content)
+            elif (m := re.match(r"^%%abccat\sP:(.*)$", line)):
+                # Explicit override for the global P: header
+                print(f"Define an explicit global P:{m.group(1)}",
+                      file=sys.stderr)
+                abccat_p_header = m.group(1)
+            elif re.match(r"^\s*$", line):
+                pass  # Blank line -- discard
+            else:
+                # Music body or other non-header content
+                output(f"{line}\n")
+
+            line = ""
+
+    # Process input from stdin or from files given as arguments
+    if len(sys.argv) <= 1:
+        abccat(sys.stdin)
+    else:
+        for filename in sys.argv[1:]:
+            with open(filename) as f:
+                abccat(f)
+
+    # Emit the merged tune with a single X:1 header and the
+    # combined (or overridden) P: play-order
+    print("X:1")
+    if abccat_p_header is not None:
+        # An explicit %%abccat P: was given; use it but show the
+        # automatically collected one as a text annotation
+        print(f"P:{abccat_p_header}")
+        print(f"%%text instead of P:{global_p_header}")
+    else:
+        print(f"P:{global_p_header}")
+    print(output_buffer, end="")
 
 
-# Output a header line.
-# Take as input the header character and its value:
-sub output_header($$) {
-    my ($header, $content) = @_;
-    
-    output("$header:$content\n");
-}
-
-
-# Output a string.
-sub output($) {
-    my ($string) = @_;
-    
-    $output_buffer .= $string;
-}
-
-
-# Output a header line but as a text line.
-# Take as input the header character and its value:
-sub output_header_as_text($$) {
-    my ($header, $content) = @_;
-    
-    output_as_text("$header:$content\n");
-}
-
-
-# Output a string as a text line.
-sub output_as_text($) {
-    my ($string) = @_;
-    
-    output("%%text $string");
-}
+if __name__ == "__main__":
+    main()
