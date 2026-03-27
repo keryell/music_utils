@@ -8,10 +8,21 @@ single composite tune.  The first P: (part order) header of each input
 tune is collected to build a global play-order string that describes
 how all the parts should be played in sequence.
 
-Headers that are meaningful only per-tune (such as T: for title, X:
-for reference number, K: for key, etc. listed in UNIQUE_HEADERS) are
-emitted as %%text comments so they appear as annotations rather than
-active ABC directives in the merged output.
+Most per-tune headers are handled to maximize compatibility with both
+abcm2ps (visual rendering) and abc2midi (MIDI output):
+
+- ``T:`` (title) is always kept as an active header since abc2midi
+  accepts it in the tune body and emits it as a MIDI sequence_name
+  meta-event.
+- ``C:`` (composer) and ``R:`` (rhythm) are kept as active headers
+  for the first tune (they are valid in the ABC header before ``K:``),
+  but demoted to ``%%text`` comments for subsequent tunes since
+  abc2midi rejects them in the body.
+- ``X:`` (reference number) is always demoted since only one ``X:``
+  is allowed per tune.
+- Other per-tune headers (listed in UNIQUE_HEADERS) are demoted to
+  ``%%text`` comments so they remain visible in print but do not
+  interfere with the merged output.
 
 An optional ``%%abccat P:<value>`` directive in the input overrides the
 automatically collected global P: header, while still showing the
@@ -30,7 +41,15 @@ import sys
 # meaningfully merged.  When concatenating, these are converted to
 # %%text comments so they remain visible but do not interfere with
 # the combined output.
-UNIQUE_HEADERS = set("ABCDGHNORSZT")
+# Note: T is excluded because abc2midi accepts it in the body
+# (sequence_name meta-event).  C and R are excluded because they
+# need special first-tune vs. subsequent-tune handling.
+UNIQUE_HEADERS = set("ABDGHNOSZ")
+
+# Headers that are valid in the ABC file header (before K:) but not
+# in the tune body.  For the first tune they are kept as active
+# headers; for subsequent tunes they are demoted to %%text.
+FIRST_TUNE_ONLY_HEADERS = set("CR")
 
 
 def main():
@@ -73,6 +92,11 @@ def main():
         - The first ``P:`` of each tune contributes to the global
           play-order; subsequent ``P:`` headers (part labels within the
           tune body) are kept as active headers.
+        - ``T:`` is always kept as an active header (abc2midi accepts
+          it in the body and emits a MIDI sequence_name meta-event).
+        - ``C:`` and ``R:`` are kept as active headers for the first
+          tune (valid in the ABC header) but demoted to ``%%text``
+          for subsequent tunes (abc2midi rejects them in the body).
         - Headers in UNIQUE_HEADERS are demoted to text comments since
           they cannot be combined across tunes.
         - All other headers (e.g. ``M:``, ``L:``, ``K:``, ``V:``,
@@ -102,8 +126,17 @@ def main():
         elif header in UNIQUE_HEADERS:
             # Per-tune-only headers: demote to text comments
             output_header_as_text(header, content)
+        elif header in FIRST_TUNE_ONLY_HEADERS:
+            # C: and R: are valid in the ABC header but not in
+            # the body -- keep them active for the first tune,
+            # demote to %%text for subsequent tunes
+            if first_tune:
+                output_header(header, content)
+            else:
+                output_header_as_text(header, content)
         else:
-            # Mergeable headers: pass through as-is
+            # Mergeable headers (M:, L:, K:, V:, T:, etc.):
+            # pass through as-is
             output_header(header, content)
 
     def abccat(f):
