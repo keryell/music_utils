@@ -34,6 +34,7 @@ Usage::
     cat tune1.abc tune2.abc | abccat > merged.abc
 """
 
+import io
 import re
 import sys
 
@@ -45,6 +46,25 @@ import sys
 # (sequence_name meta-event).  C and R are excluded because they
 # need special first-tune vs. subsequent-tune handling.
 UNIQUE_HEADERS = set("ABDGHNOSZ")
+
+# Fallback encoding when a file is not valid UTF-8.
+# ISO-8859-15 (Latin-9) covers Western European languages and includes
+# the euro sign and French œ/Œ that ISO-8859-1 lacks.
+FALLBACK_ENCODING = "iso-8859-15"
+
+
+def read_file(path):
+    """Read a file, trying UTF-8 first and falling back to Latin-9.
+
+    Since valid Latin-9 that also happens to be valid UTF-8 is
+    necessarily pure ASCII, the UTF-8 decode produces the same result
+    in that case — so the heuristic is lossless.
+    """
+    raw = open(path, "rb").read()
+    try:
+        return io.StringIO(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return io.StringIO(raw.decode(FALLBACK_ENCODING))
 
 # Headers that are valid in the ABC file header (before K:) but not
 # in the tune body.  For the first tune they are kept as active
@@ -176,11 +196,15 @@ def main():
 
     # Process input from stdin or from files given as arguments
     if len(sys.argv) <= 1:
-        abccat(sys.stdin)
+        # Re-open stdin in binary mode for encoding auto-detection
+        raw = sys.stdin.buffer.read()
+        try:
+            abccat(io.StringIO(raw.decode("utf-8")))
+        except UnicodeDecodeError:
+            abccat(io.StringIO(raw.decode(FALLBACK_ENCODING)))
     else:
         for filename in sys.argv[1:]:
-            with open(filename) as f:
-                abccat(f)
+            abccat(read_file(filename))
 
     # Emit the merged tune with a single X:1 header and the
     # combined (or overridden) P: play-order
