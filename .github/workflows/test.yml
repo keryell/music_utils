@@ -5,6 +5,11 @@ on:
   pull_request:
     branches: [main]
 
+# Address https://github.com/keryell/music_utils/security/code-scanning/1
+# "Workflow does not contain permissions #1"
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
