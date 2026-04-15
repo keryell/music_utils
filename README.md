@@ -4,6 +4,9 @@
 
 Tools for processing [ABC music notation](https://abcnotation.com/wiki/abc:standard:v2.2) files.
 
+These tools are mainly used in the
+[Kazimodal](https://github.com/keryell/musique) music project.
+
 ## abccat
 
 Concatenates multiple ABC tunes into a single multi-part tune,

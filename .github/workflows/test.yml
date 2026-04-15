@@ -1,12 +1,19 @@
 name: Tests
+
 on:
+  # Run tests on every push to main (including merged PRs)
   push:
     branches: [main]
+  # Run tests on every pull request targeting main
   pull_request:
     branches: [main]
 
-# Address https://github.com/keryell/music_utils/security/code-scanning/1
-# "Workflow does not contain permissions #1"
+# Restrict the GITHUB_TOKEN to the minimum permissions needed.
+# This workflow only reads source code, so "contents: read" is
+# sufficient.  Without an explicit permissions block, the token
+# inherits the repository/organization default which may be
+# read-write — violating the principle of least privilege.
+# See https://github.com/keryell/music_utils/security/code-scanning/1
 permissions:
   contents: read
 
@@ -15,8 +22,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Do not leave the GITHUB_TOKEN in the git config after
+          # checkout.  This prevents later steps (tests, build
+          # scripts, third-party actions) from silently using the
+          # token to push code or access private resources.
+          persist-credentials: false
+
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
+
       - run: pip install pytest
       - run: pytest tests/ -v
