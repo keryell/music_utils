@@ -47,24 +47,56 @@ import sys
 # need special first-tune vs. subsequent-tune handling.
 UNIQUE_HEADERS = set("ABDGHNOSZ")
 
-# Fallback encoding when a file is not valid UTF-8.
-# ISO-8859-15 (Latin-9) covers Western European languages and includes
-# the euro sign and French œ/Œ that ISO-8859-1 lacks.
+# Fallback encoding when a file is not valid UTF-8 and no explicit
+# ``%%encoding`` directive is present.  ISO-8859-15 (Latin-9) covers
+# Western European languages and includes the euro sign and French
+# œ/Œ that ISO-8859-1 lacks.
 FALLBACK_ENCODING = "iso-8859-15"
+
+# Matches an ABC ``%%encoding <charset>`` directive.  Only the first
+# occurrence in the file is honored.  Example: ``%%encoding latin1``.
+ENCODING_DIRECTIVE_RE = re.compile(
+    rb"^%%encoding\s+(\S+)", re.MULTILINE
+)
+
+# Normalize a few ABC encoding aliases to Python codec names.
+# ABC files in the wild commonly use bare names like ``latin1``
+# which Python accepts, but some tools write ``native`` or similar
+# non-standard values.
+ENCODING_ALIASES = {
+    "native": "utf-8",
+}
+
+
+def decode_bytes(raw):
+    """Decode raw file bytes into a text string.
+
+    Resolution order:
+    1. If an ABC ``%%encoding`` directive is present in the file,
+       use the charset it declares.  This lets the file itself
+       document its encoding — most authoritative.
+    2. Otherwise, try UTF-8.  Since valid Latin-9 that also happens
+       to be valid UTF-8 is necessarily pure ASCII, the UTF-8 decode
+       produces the same result in that case — lossless.
+    3. On UTF-8 failure, fall back to ISO-8859-15 (Latin-9).
+    """
+    m = ENCODING_DIRECTIVE_RE.search(raw)
+    if m:
+        # The directive itself is pure ASCII, so decoding the match
+        # as ASCII is safe regardless of the real file encoding.
+        declared = m.group(1).decode("ascii").lower()
+        codec = ENCODING_ALIASES.get(declared, declared)
+        return raw.decode(codec)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(FALLBACK_ENCODING)
 
 
 def read_file(path):
-    """Read a file, trying UTF-8 first and falling back to Latin-9.
-
-    Since valid Latin-9 that also happens to be valid UTF-8 is
-    necessarily pure ASCII, the UTF-8 decode produces the same result
-    in that case — so the heuristic is lossless.
-    """
-    raw = open(path, "rb").read()
-    try:
-        return io.StringIO(raw.decode("utf-8"))
-    except UnicodeDecodeError:
-        return io.StringIO(raw.decode(FALLBACK_ENCODING))
+    """Read a file and return it as an in-memory text stream."""
+    with open(path, "rb") as f:
+        return io.StringIO(decode_bytes(f.read()))
 
 # Headers that are valid in the ABC file header (before K:) but not
 # in the tune body.  For the first tune they are kept as active
@@ -196,12 +228,9 @@ def main():
 
     # Process input from stdin or from files given as arguments
     if len(sys.argv) <= 1:
-        # Re-open stdin in binary mode for encoding auto-detection
-        raw = sys.stdin.buffer.read()
-        try:
-            abccat(io.StringIO(raw.decode("utf-8")))
-        except UnicodeDecodeError:
-            abccat(io.StringIO(raw.decode(FALLBACK_ENCODING)))
+        # Read stdin as bytes so the same encoding detection (and
+        # ``%%encoding`` directive handling) applies as for files
+        abccat(io.StringIO(decode_bytes(sys.stdin.buffer.read())))
     else:
         for filename in sys.argv[1:]:
             abccat(read_file(filename))

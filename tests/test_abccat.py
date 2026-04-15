@@ -5,7 +5,9 @@ import subprocess
 import textwrap
 
 # Path to the abccat script relative to this test file
-ABCCAT = str(pathlib.Path(__file__).resolve().parent.parent / "abccat")
+TESTS_DIR = pathlib.Path(__file__).resolve().parent
+ABCCAT = str(TESTS_DIR.parent / "abccat")
+FIXTURES = TESTS_DIR / "fixtures"
 
 
 def run_abccat(*files, stdin=None):
@@ -242,3 +244,63 @@ def test_two_tune_full_merge():
     # Music body preserved
     assert "ABCD EFGA|" in out
     assert "DEF|" in out
+
+
+# --- Fixture file tests ---
+#
+# These tests use real files committed to tests/fixtures/ in known
+# encodings.  This exercises the full file-reading path and serves
+# as human-readable documentation of the supported input formats.
+
+def test_fixture_utf8():
+    """The UTF-8 fixture decodes correctly."""
+    r = run_abccat(str(FIXTURES / "tune_utf8.abc"))
+    assert "T:Café de la Paix" in r.stdout
+    assert "C:Traditionnel" in r.stdout
+    assert "R:Valse" in r.stdout
+
+
+def test_fixture_latin9_autodetect():
+    """The Latin-9 fixture (no directive) is auto-detected via
+    the UTF-8-then-Latin-9 fallback."""
+    r = run_abccat(str(FIXTURES / "tune_latin9.abc"))
+    # é (0xe9 in Latin-9) and œ (0xbd, Latin-9-specific)
+    assert "T:Café et Cœur" in r.stdout
+
+
+def test_fixture_latin1_with_encoding_directive():
+    """A file tagged with ``%%encoding latin1`` is decoded using
+    that explicit charset, not the auto-detection fallback."""
+    r = run_abccat(str(FIXTURES / "tune_latin1_directive.abc"))
+    # è (0xe8 in Latin-1) — would also work in Latin-9, but the
+    # point of this test is that the %%encoding directive is
+    # actually read and applied
+    assert "T:Balène" in r.stdout
+
+
+def test_fixture_mixed_encodings_merged():
+    """Merging all three fixtures (UTF-8, Latin-9, Latin-1 with
+    directive) produces a single tune with all titles correctly
+    decoded."""
+    r = run_abccat(
+        str(FIXTURES / "tune_utf8.abc"),
+        str(FIXTURES / "tune_latin9.abc"),
+        str(FIXTURES / "tune_latin1_directive.abc"),
+    )
+    assert "T:Café de la Paix" in r.stdout
+    assert "T:Café et Cœur" in r.stdout
+    assert "T:Balène" in r.stdout
+
+
+def test_fixture_output_is_valid_utf8():
+    """Regression guard: output bytes are always valid UTF-8,
+    regardless of input encoding."""
+    r = subprocess.run(
+        [ABCCAT,
+         str(FIXTURES / "tune_utf8.abc"),
+         str(FIXTURES / "tune_latin9.abc"),
+         str(FIXTURES / "tune_latin1_directive.abc")],
+        capture_output=True,
+    )
+    # Will raise UnicodeDecodeError if output is not valid UTF-8
+    r.stdout.decode("utf-8")
