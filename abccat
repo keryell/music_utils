@@ -32,8 +32,10 @@ Usage::
 
     abccat tune1.abc tune2.abc > merged.abc
     cat tune1.abc tune2.abc | abccat > merged.abc
+    abccat --encoding iso-8859-15 old_file.abc > merged.abc
 """
 
+import argparse
 import io
 import re
 import sys
@@ -68,10 +70,14 @@ ENCODING_ALIASES = {
 }
 
 
-def decode_bytes(raw):
+def decode_bytes(raw, forced_encoding=None):
     """Decode raw file bytes into a text string.
 
-    Resolution order:
+    If *forced_encoding* is given (e.g. from ``--encoding`` on the
+    command line), it takes absolute precedence — no auto-detection
+    is attempted.
+
+    Otherwise the resolution order is:
     1. If an ABC ``%%encoding`` directive is present in the file,
        use the charset it declares.  This lets the file itself
        document its encoding — most authoritative.
@@ -80,6 +86,8 @@ def decode_bytes(raw):
        produces the same result in that case — lossless.
     3. On UTF-8 failure, fall back to ISO-8859-15 (Latin-9).
     """
+    if forced_encoding:
+        return raw.decode(forced_encoding)
     m = ENCODING_DIRECTIVE_RE.search(raw)
     if m:
         # The directive itself is pure ASCII, so decoding the match
@@ -93,10 +101,10 @@ def decode_bytes(raw):
         return raw.decode(FALLBACK_ENCODING)
 
 
-def read_file(path):
+def read_file(path, forced_encoding=None):
     """Read a file and return it as an in-memory text stream."""
     with open(path, "rb") as f:
-        return io.StringIO(decode_bytes(f.read()))
+        return io.StringIO(decode_bytes(f.read(), forced_encoding))
 
 # Headers that are valid in the ABC file header (before K:) but not
 # in the tune body.  For the first tune they are kept as active
@@ -104,7 +112,30 @@ def read_file(path):
 FIRST_TUNE_ONLY_HEADERS = set("CR")
 
 
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Concatenate ABC tunes into a single multi-part tune."
+    )
+    parser.add_argument(
+        "files", nargs="*", default=[],
+        help="ABC files to concatenate (reads stdin if none given)"
+    )
+    parser.add_argument(
+        "--encoding", "-e", default=None,
+        help=(
+            "Force a specific character encoding for all input files "
+            "(e.g. iso-8859-15, latin1, utf-8).  When set, this "
+            "overrides both the automatic UTF-8/Latin-9 detection "
+            "and any %%encoding directive in the files."
+        )
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     # Whether we are still processing the very first tune
     first_tune = True
     # Set to True once at least one X: header has been seen
@@ -227,13 +258,14 @@ def main():
             line = ""
 
     # Process input from stdin or from files given as arguments
-    if len(sys.argv) <= 1:
+    if not args.files:
         # Read stdin as bytes so the same encoding detection (and
         # ``%%encoding`` directive handling) applies as for files
-        abccat(io.StringIO(decode_bytes(sys.stdin.buffer.read())))
+        abccat(io.StringIO(decode_bytes(
+            sys.stdin.buffer.read(), args.encoding)))
     else:
-        for filename in sys.argv[1:]:
-            abccat(read_file(filename))
+        for filename in args.files:
+            abccat(read_file(filename, args.encoding))
 
     # Emit the merged tune with a single X:1 header and the
     # combined (or overridden) P: play-order

@@ -304,3 +304,44 @@ def test_fixture_output_is_valid_utf8():
     )
     # Will raise UnicodeDecodeError if output is not valid UTF-8
     r.stdout.decode("utf-8")
+
+
+# --- --encoding command-line option ---
+
+def test_encoding_flag_forces_latin9():
+    """The --encoding flag forces decoding with the given charset,
+    bypassing auto-detection."""
+    r = run_abccat("--encoding", "iso-8859-15",
+                   str(FIXTURES / "tune_latin9.abc"))
+    assert "T:Café et Cœur" in r.stdout
+
+
+def test_encoding_flag_overrides_directive(tmp_path):
+    """When --encoding is given, any %%encoding directive in the
+    file is ignored — the command-line flag takes precedence."""
+    f = tmp_path / "wrong_directive.abc"
+    # File is actually Latin-9 but has a %%encoding utf-8 directive.
+    # Without --encoding, this would fail or produce garbage.
+    # With --encoding iso-8859-15, the flag wins.
+    f.write_bytes(
+        b"%%encoding utf-8\nX:1\nT:Caf\xe9\nK:G\nABCD\n"
+    )
+    r = run_abccat("--encoding", "iso-8859-15", str(f))
+    assert "T:Café" in r.stdout
+
+
+def test_encoding_flag_with_stdin():
+    """The --encoding flag also works when reading from stdin."""
+    r = subprocess.run(
+        [ABCCAT, "--encoding", "iso-8859-15"],
+        input=b"X:1\nT:Caf\xe9\nK:G\nABCD\n",
+        capture_output=True,
+    )
+    assert "T:Café".encode("utf-8") in r.stdout
+
+
+def test_encoding_flag_short_form():
+    """The -e short form works identically to --encoding."""
+    r = run_abccat("-e", "iso-8859-15",
+                   str(FIXTURES / "tune_latin9.abc"))
+    assert "T:Café et Cœur" in r.stdout

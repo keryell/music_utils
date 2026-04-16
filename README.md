@@ -42,14 +42,29 @@ in abcm2ps printed output but is invisible to abc2midi.  This is the
 best available compromise: the metadata remains readable on the
 score even though it cannot be embedded in the MIDI output.
 
-Input files can be UTF-8 or ISO-8859-15 (Latin-9) encoded; the
-encoding is detected automatically per file.
+### Character encoding
+
+Input files can mix different character encodings.  The encoding of
+each file is resolved in this order:
+
+1. **`--encoding` flag** — if given on the command line, it forces
+   the encoding for all input files, overriding everything else.
+2. **`%%encoding` directive** — if the file contains a line like
+   `%%encoding latin1`, that charset is used.
+3. **UTF-8 auto-detection** — the file is decoded as UTF-8.
+4. **ISO-8859-15 (Latin-9) fallback** — if UTF-8 decoding fails,
+   Latin-9 is assumed.  This covers Western European languages
+   including the euro sign (€) and French œ/Œ.
+
+The output is always UTF-8.
 
 ### Usage
 
 ```
 abccat tune1.abc tune2.abc > merged.abc
 cat tune1.abc tune2.abc | abccat > merged.abc
+abccat --encoding iso-8859-15 old_file.abc > merged.abc
+abccat -e latin1 legacy1.abc legacy2.abc > merged.abc
 ```
 
 ## Running the tests
