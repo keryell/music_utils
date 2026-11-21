@@ -42,6 +42,28 @@ in abcm2ps printed output but is invisible to abc2midi.  This is the
 best available compromise: the metadata remains readable on the
 score even though it cannot be embedded in the MIDI output.
 
+### Tune headers and part labels
+
+abc2midi plays a part from its `P:` label up to the next one, so the
+header of a following tune, written in the body before the tune's
+first part label, would belong to the previous part: when that part
+is repeated, its later repetitions would play with the meter, tempo
+and `%%MIDI` settings of the next tune.  So the header of each tune
+after the first one is split around the tune's first `P:` label in
+the body:
+
+- `M:`, `L:`, `Q:`, `K:`, `I:`, `U:`, `V:` and the `%%MIDI...` and
+  `%%temperament...` directives, including those between `K:` and
+  the label, are written **after** the label, so that they start the
+  tune's first part;
+- `T:`, the demoted `%%text` headers, comments and other directives
+  are written **before** the label, since abcm2ps ends the music line
+  at a `T:` or `%%text` in the body and would otherwise print the
+  label at the end of the previous tune.
+
+A tune whose music starts before any `P:` label keeps its header in
+input order.
+
 ### Character encoding
 
 Input files can mix different character encodings.  The encoding of

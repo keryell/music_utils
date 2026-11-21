@@ -114,6 +114,133 @@ def test_abccat_p_directive_overrides():
     assert "%%text instead of P:AB" in lines
 
 
+# --- Header of subsequent tunes around their first part label ---
+
+def test_subsequent_tune_header_split_around_part_label():
+    """The header of a later tune is written around its first part
+    label: titles and %%text before it, so abcm2ps prints the label on
+    the tune's first staff, and meter, length, tempo and key after it,
+    so that in abc2midi a repeated previous part keeps its own."""
+    inp = textwrap.dedent("""\
+        X:1
+        T:One
+        M:6/8
+        L:1/8
+        Q:3/8=60
+        P:A2
+        K:G
+        P:A
+        "G"GAB "D"A3|"G"GAB G3|
+
+        X:2
+        T:Two
+        M:4/4
+        L:1/8
+        Q:1/4=120
+        P:B2
+        K:G
+        P:B
+        "G"G2A2 B2c2|"G"d8|
+    """)
+    r = run_abccat(stdin=inp)
+    assert r.stdout == textwrap.dedent("""\
+        X:1
+        P:A2B2
+        %%text X:1
+        T:One
+        M:6/8
+        L:1/8
+        Q:3/8=60
+        %%text P:A2
+        K:G
+        P:A
+        "G"GAB "D"A3|"G"GAB G3|
+        %%text X:2
+        T:Two
+        %%text P:B2
+        P:B
+        M:4/4
+        L:1/8
+        Q:1/4=120
+        K:G
+        "G"G2A2 B2c2|"G"d8|
+    """)
+
+
+def test_playback_directives_follow_part_label():
+    """%%MIDI directives of a later tune, in its header or between K:
+    and its first part label, are written after the label; comments
+    and other directives stay before it."""
+    inp = textwrap.dedent("""\
+        X:1
+        T:One
+        P:A
+        K:G
+        P:A
+        GABc|
+        X:2
+        T:Two
+        M:3/4
+        %%MIDI gchord fzc
+        %%vskip 1cm
+        P:B
+        K:D
+        %%MIDI program 73
+        % second part
+        P:B
+        DEF|
+    """)
+    r = run_abccat(stdin=inp)
+    tune_2 = r.stdout.split("GABc|\n", 1)[1]
+    assert tune_2 == textwrap.dedent("""\
+        %%text X:2
+        T:Two
+        %%vskip 1cm
+        %%text P:B
+        % second part
+        P:B
+        M:3/4
+        %%MIDI gchord fzc
+        K:D
+        %%MIDI program 73
+        DEF|
+    """)
+
+
+def test_first_tune_header_stays_in_place():
+    """The first tune's header is the merged tune's header: it is not
+    moved after the first part label."""
+    inp = "X:1\nT:One\nM:6/8\nP:A\nK:G\nP:A\nGAB|\n"
+    r = run_abccat(stdin=inp)
+    assert r.stdout == (
+        "X:1\nP:A\n%%text X:1\nT:One\nM:6/8\n%%text P:A\nK:G\nP:A\nGAB|\n"
+    )
+
+
+def test_subsequent_tune_without_part_label_keeps_header_order():
+    """A later tune whose music starts before any part label keeps
+    its header lines in input order."""
+    inp = ("X:1\nT:One\nK:G\nGABc|\n"
+           "X:2\nT:Two\nM:3/4\n%%MIDI program 73\nP:B\nK:D\n"
+           "DEF|\nP:B\nABc|\n")
+    r = run_abccat(stdin=inp)
+    tune_2 = r.stdout.split("GABc|\n", 1)[1]
+    assert tune_2 == ("%%text X:2\nT:Two\nM:3/4\n%%MIDI program 73\n"
+                      "%%text P:B\nK:D\nDEF|\nP:B\nABc|\n")
+
+
+def test_subsequent_tune_without_music_keeps_header():
+    """A later tune with a header but no music, at the end of the
+    input or before another tune, keeps its header lines in order."""
+    inp = ("X:1\nT:One\nK:G\nGABc|\n"
+           "X:2\nT:Two\nM:3/4\nK:D\n"
+           "X:3\nT:Three\nM:2/4\nK:A\n")
+    r = run_abccat(stdin=inp)
+    tail = r.stdout.split("GABc|\n", 1)[1]
+    assert tail == ("%%text X:2\nT:Two\nM:3/4\nK:D\n"
+                    "%%text X:3\nT:Three\nM:2/4\nK:A\n")
+
+
 # --- Continuation lines ---
 
 def test_continuation_line():
