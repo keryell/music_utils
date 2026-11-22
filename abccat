@@ -24,6 +24,25 @@ abcm2ps (visual rendering) and abc2midi (MIDI output):
   ``%%text`` comments so they remain visible in print but do not
   interfere with the merged output.
 
+The header of each tune after the first one lands in the body of the
+merged tune, where abc2midi counts it as part of the part played just
+before.  When that part is repeated, its later repetitions would then
+play with the meter, tempo and %%MIDI settings of the next tune.  So
+the header of each subsequent tune is held back until the tune's first
+``P:`` part label, and split around it:
+
+- lines that set abc2midi playback or parsing state (the fields in
+  PLAYBACK_HEADERS and the directives matched by
+  PLAYBACK_DIRECTIVE_RE) are written after the label, so that they
+  start the new part;
+- the other lines (``T:``, ``%%text`` comments, other directives) are
+  written before the label, because abcm2ps ends the music line at a
+  ``T:`` or a ``%%text`` in the body, which would leave a label
+  written before them at the end of the previous tune's last staff.
+
+A tune whose music starts before any part label keeps its header in
+input order.
+
 An optional ``%%abccat P:<value>`` directive in the input overrides the
 automatically collected global P: header, while still showing the
 original as a %%text annotation.
@@ -48,6 +67,19 @@ import sys
 # (sequence_name meta-event).  C and R are excluded because they
 # need special first-tune vs. subsequent-tune handling.
 UNIQUE_HEADERS = set("ABDGHNOSZ")
+
+# Header fields that set how abc2midi parses or plays the music that
+# follows: instruction, key, unit note length, meter, tempo,
+# user-defined symbol and voice.  In the held header of a subsequent
+# tune they are written after the tune's first part label.
+PLAYBACK_HEADERS = set("IKLMQUV")
+
+# ``%%`` directives that abc2midi reads as playback settings:
+# ``%%MIDI``, ``%%MIDIx``, ``%%MIDIdef``, ``%%MidiOff``/``%%MidiOn``
+# and ``%%temperament...``.  Same treatment as PLAYBACK_HEADERS.
+PLAYBACK_DIRECTIVE_RE = re.compile(
+    r"^\s*%%(midi|temperament)", re.IGNORECASE
+)
 
 # Fallback encoding when a file is not valid UTF-8 and no explicit
 # ``%%encoding`` directive is present.  ISO-8859-15 (Latin-9) covers
@@ -149,15 +181,48 @@ def main():
     output_buffer = ""
     # Tracks whether the first P: of the current tune has been seen
     p_header_found = False
+    # Header lines of the current tune held back until its first part
+    # label, as (sets_playback, text) pairs; None when not holding
+    held_header = None
 
-    def output(s):
-        """Append a string to the output buffer."""
+    def output(s, playback=False):
+        """Append a string to the output buffer, or to the held header
+        of the current tune while it is held back.
+
+        *playback* marks a line that sets abc2midi playback or parsing
+        state; it only matters for a held header (see
+        ``flush_held_header``).
+        """
         nonlocal output_buffer
-        output_buffer += s
+        if held_header is None:
+            output_buffer += s
+        else:
+            held_header.append((playback, s))
 
-    def output_header(header, content):
+    def flush_held_header(part_label=None):
+        """Write the held header of the current tune and stop holding.
+
+        Without *part_label* the held lines are written in input
+        order.  With it, the lines that do not set playback state are
+        written first, then the part label, then the playback lines,
+        so that in abc2midi the part labelled *part_label* starts with
+        the tune's meter, tempo, key and %%MIDI settings, and the part
+        before it keeps its own.
+        """
+        nonlocal held_header
+        lines, held_header = held_header, None
+        if part_label is None:
+            output("".join(text for _, text in lines))
+        else:
+            output("".join(text for playback, text in lines
+                           if not playback))
+            output(part_label)
+            output("".join(text for playback, text in lines
+                           if playback))
+
+    def output_header(header, content, playback=False):
         """Append an ABC header line (e.g. ``M:4/4``) to the output."""
-        output(f"{header}:{content}\n")
+        output(f"{header}:{content}\n", playback)
 
     def output_as_text(s):
         """Append a string as a ``%%text`` comment line."""
@@ -172,9 +237,13 @@ def main():
 
         - ``X:`` marks the start of a new tune: reset per-tune state
           and emit the original reference number as a text comment.
+          From the second tune on, it also starts holding back the
+          tune's header until its first part label.
         - The first ``P:`` of each tune contributes to the global
           play-order; subsequent ``P:`` headers (part labels within the
-          tune body) are kept as active headers.
+          tune body) are kept as active headers.  The first part label
+          of a held-back tune header writes that header around itself
+          (see ``flush_held_header``).
         - ``T:`` is always kept as an active header (abc2midi accepts
           it in the body and emits a MIDI sequence_name meta-event).
         - ``C:`` and ``R:`` are kept as active headers for the first
@@ -186,14 +255,23 @@ def main():
           ``w:``) are passed through unchanged.
         """
         nonlocal first_tune, a_tune_has_been_found, global_p_header
-        nonlocal p_header_found
+        nonlocal p_header_found, held_header
 
         if header == "X":
             # Beginning of a new tune
+            if held_header is not None:
+                # The previous tune had no music: write its header
+                # as it came
+                flush_held_header()
             p_header_found = False
             if first_tune and a_tune_has_been_found:
                 first_tune = False
             a_tune_has_been_found = True
+            if not first_tune:
+                # The first tune's header is the merged tune's header;
+                # the header of each later tune waits for its first
+                # part label
+                held_header = []
             output_header_as_text(header, content)
         elif header == "P":
             if not p_header_found:
@@ -202,6 +280,9 @@ def main():
                 global_p_header += content
                 p_header_found = True
                 output_header_as_text(header, content)
+            elif held_header is not None:
+                # First part label of a tune whose header is held
+                flush_held_header(f"{header}:{content}\n")
             else:
                 # Subsequent P: headers are part labels within
                 # the tune body -- keep them active
@@ -220,7 +301,8 @@ def main():
         else:
             # Mergeable headers (M:, L:, K:, V:, T:, etc.):
             # pass through as-is
-            output_header(header, content)
+            output_header(header, content,
+                          playback=header in PLAYBACK_HEADERS)
 
     def abccat(f):
         """Parse an ABC file and process its headers and body lines.
@@ -228,7 +310,9 @@ def main():
         Handles continuation lines (ending with ``\\``) by
         accumulating them before processing.  Recognizes the special
         ``%%abccat P:`` directive to override the global part order.
-        Blank lines are silently discarded.
+        Blank lines are silently discarded.  Comment and directive
+        lines are held with a held-back tune header; the first music
+        line writes that header in input order.
         """
         nonlocal abccat_p_header
         line = ""
@@ -251,8 +335,16 @@ def main():
                 abccat_p_header = m.group(1)
             elif re.match(r"^\s*$", line):
                 pass  # Blank line -- discard
+            elif re.match(r"^\s*%", line):
+                # Comment or directive
+                output(f"{line}\n",
+                       playback=bool(PLAYBACK_DIRECTIVE_RE.match(line)))
             else:
-                # Music body or other non-header content
+                # Music body or other non-header content.  Music
+                # coming before any part label of a tune writes the
+                # tune's held header in input order
+                if held_header is not None:
+                    flush_held_header()
                 output(f"{line}\n")
 
             line = ""
@@ -266,6 +358,9 @@ def main():
     else:
         for filename in args.files:
             abccat(read_file(filename, args.encoding))
+    if held_header is not None:
+        # The last tune has no music
+        flush_held_header()
 
     # Emit the merged tune with a single X:1 header and the
     # combined (or overridden) P: play-order
